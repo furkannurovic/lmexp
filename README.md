@@ -1,6 +1,26 @@
 # lmexp
 
-"Let me explain": a Claude Code mod that adds the `/lmexp` slash command. It opens a blank canvas in its own browser window where you draw or write what you mean. Press Ctrl+Enter and the picture is saved and referenced in your prompt box, ready for you to add your own words and send to Claude.
+**"Let me explain."** Some things are faster to draw than to describe. `lmexp` is a Claude Code mod that adds the `/lmexp` slash command: it opens a blank canvas, you sketch or write what you mean, and the picture goes into your prompt for Claude to look at.
+
+![The lmexp canvas with a sketched page layout and notes](docs/canvas.png)
+
+## How it goes
+
+1. Type `/lmexp` in Claude Code. A blank canvas opens in its own window.
+2. Draw, write and annotate, as above.
+3. Press **Ctrl+Enter**. The window closes and the drawing is cropped and saved. This is the picture Claude gets:
+
+   ![The cropped drawing that Claude receives](docs/result.png)
+
+4. Your prompt box now holds a line pointing Claude at the picture. Add your own words after it and press Enter when you are ready:
+
+   ```
+   Let me explain with a drawing. I drew it on a canvas and it is saved at
+   ~/.claude/plugins/data/lmexp/lmexp-20261120-184958.png. Look at it with
+   the Read tool, then respond to what it shows.
+
+   do this for the settings page too
+   ```
 
 ## Install
 
