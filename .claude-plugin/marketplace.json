@@ -1,0 +1,5 @@
+{
+  "name": "lmexp",
+  "owner": { "name": "furkannurovic" },
+  "plugins": [{ "name": "lmexp", "source": "./" }]
+}

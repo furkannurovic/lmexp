@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Let me explain</title>
+<style>
+  :root { --ink: #1c1c1c; --bar: #2a2a2e; --bar-fg: #e8e8ea; --accent: #5b9cf5; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fff; font: 14px system-ui, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; touch-action: none; cursor: crosshair; }
+  body.text canvas { cursor: text; }
+  #bar {
+    position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; align-items: center; padding: 6px 8px;
+    background: var(--bar); color: var(--bar-fg); border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .25); user-select: none; white-space: nowrap;
+  }
+  #bar button {
+    font: inherit; color: inherit; background: transparent; border: 1px solid transparent;
+    border-radius: 6px; padding: 5px 9px; cursor: pointer;
+  }
+  #bar button:hover { background: rgba(255, 255, 255, .1); }
+  #bar button.on { border-color: var(--accent); background: rgba(91, 156, 245, .2); }
+  #bar button.swatch { width: 24px; height: 24px; padding: 0; border-radius: 50%; border: 2px solid transparent; }
+  #bar button.swatch.on { border-color: #fff; }
+  #bar .sep { width: 1px; height: 20px; background: rgba(255, 255, 255, .2); margin: 0 2px; }
+  #bar #send { background: var(--accent); color: #fff; font-weight: 600; }
+  #bar kbd { font: 12px ui-monospace, monospace; opacity: .8; margin-left: 4px; }
+  #toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--bar); color: var(--bar-fg); padding: 8px 14px; border-radius: 8px;
+    opacity: 0; transition: opacity .15s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+  textarea.note {
+    position: fixed; margin: 0; padding: 0; border: 0; outline: 1px dashed #999; outline-offset: 3px;
+    background: transparent; resize: none; overflow: hidden; white-space: pre;
+    font-family: system-ui, sans-serif; min-width: 40px;
+  }
+  #done { position: fixed; inset: 0; display: none; place-items: center; background: #fff; font-size: 20px; color: #333; }
+  #done.show { display: grid; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="bar">
+  <button data-tool="pen" class="on" title="Pen (P)">Pen</button>
+  <button data-tool="text" title="Type text (T)">Text</button>
+  <button data-tool="eraser" title="Eraser (E)">Eraser</button>
+  <span class="sep"></span>
+  <button class="swatch on" data-color="#1c1c1c" style="background:#1c1c1c" title="Black"></button>
+  <button class="swatch" data-color="#d93025" style="background:#d93025" title="Red"></button>
+  <button class="swatch" data-color="#1a73e8" style="background:#1a73e8" title="Blue"></button>
+  <button class="swatch" data-color="#188038" style="background:#188038" title="Green"></button>
+  <span class="sep"></span>
+  <button data-size="0" title="Thin">S</button>
+  <button data-size="1" class="on" title="Medium">M</button>
+  <button data-size="2" title="Thick">L</button>
+  <span class="sep"></span>
+  <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+  <button id="clear" title="Clear everything">Clear</button>
+  <span class="sep"></span>
+  <button id="send">Done<kbd>Ctrl+Enter</kbd></button>
+</div>
+<div id="toast"></div>
+<div id="done">Added to your prompt. You can close this window.</div>
+
+<script>
+(() => {
+  const PEN = [2, 4, 8], ERASE = [14, 28, 56], FONT = [16, 24, 36];
+  const LINE = 1.3, PAD = 24, MAX_SIDE = 1800;
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const toastEl = document.getElementById('toast');
+
+  let items = [];        // { kind: 'stroke', points, color, width } | { kind: 'text', x, y, text, color, size }
+  let current = null;    // the stroke being drawn
+  let tool = 'pen', color = '#1c1c1c', size = 1;
+  let editor = null;     // the open textarea, if any
+  let isSent = false, escArmed = 0, toastTimer = 0;
+
+  function toast(message) {
+    toastEl.textContent = message;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2200);
+  }
+
+  function resize() {
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.round(innerWidth * ratio);
+    canvas.height = Math.round(innerHeight * ratio);
+    draw();
+  }
+
+  function paintStroke(g, stroke) {
+    const p = stroke.points;
+    g.strokeStyle = g.fillStyle = stroke.color;
+    g.lineWidth = stroke.width;
+    g.lineCap = g.lineJoin = 'round';
+    if (p.length === 1) {
+      g.beginPath();
+      g.arc(p[0].x, p[0].y, stroke.width / 2, 0, Math.PI * 2);
+      g.fill();
+      return;
+    }
+    g.beginPath();
+    g.moveTo(p[0].x, p[0].y);
+    for (let i = 1; i < p.length - 1; i++) {
+      g.quadraticCurveTo(p[i].x, p[i].y, (p[i].x + p[i + 1].x) / 2, (p[i].y + p[i + 1].y) / 2);
+    }
+    g.lineTo(p[p.length - 1].x, p[p.length - 1].y);
+    g.stroke();
+  }
+
+  function paintText(g, item) {
+    g.fillStyle = item.color;
+    g.font = `${item.size}px system-ui, sans-serif`;
+    g.textBaseline = 'top';
+    item.text.split('\n').forEach((line, i) => {
+      g.fillText(line, item.x, item.y + i * item.size * LINE + item.size * (LINE - 1) / 2);
+    });
+  }
+
+  function paintAll(g) {
+    for (const item of current ? [...items, current] : items) {
+      if (item.kind === 'stroke') paintStroke(g, item);
+      else paintText(g, item);
+    }
+  }
+
+  function draw() {
+    const ratio = window.devicePixelRatio || 1;
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, innerWidth, innerHeight);
+    paintAll(ctx);
+  }
+
+  // The box around everything drawn, in CSS pixels; null when nothing is.
+  function bounds() {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const item of items) {
+      if (item.kind === 'stroke') {
+        if (item.color === '#fff') continue;
+        const half = item.width / 2;
+        for (const p of item.points) {
+          x0 = Math.min(x0, p.x - half); y0 = Math.min(y0, p.y - half);
+          x1 = Math.max(x1, p.x + half); y1 = Math.max(y1, p.y + half);
+        }
+      } else {
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.font = `${item.size}px system-ui, sans-serif`;
+        const lines = item.text.split('\n');
+        const width = Math.max(...lines.map(line => ctx.measureText(line).width));
+        ctx.restore();
+        x0 = Math.min(x0, item.x); y0 = Math.min(y0, item.y);
+        x1 = Math.max(x1, item.x + width); y1 = Math.max(y1, item.y + lines.length * item.size * LINE);
+      }
+    }
+    return x0 === Infinity ? null : { x: x0 - PAD, y: y0 - PAD, w: x1 - x0 + PAD * 2, h: y1 - y0 + PAD * 2 };
+  }
+
+  // Takes the open textarea down. Detached first, so the blur that removing
+  // it raises finds no editor and cannot commit it a second time.
+  function closeEditor(keep) {
+    const area = editor;
+    if (!area) return;
+    editor = null;
+    const text = area.value.replace(/\s+$/, '');
+    if (keep && text) {
+      items.push({ kind: 'text', x: +area.dataset.x, y: +area.dataset.y, text, color: area.style.color, size: +area.dataset.size });
+    }
+    area.remove();
+    draw();
+  }
+
+  function commitText() {
+    closeEditor(true);
+  }
+
+  function openEditor(x, y) {
+    commitText();
+    const area = document.createElement('textarea');
+    area.className = 'note';
+    area.dataset.x = x; area.dataset.y = y; area.dataset.size = FONT[size];
+    area.style.left = `${x}px`; area.style.top = `${y}px`;
+    area.style.color = color;
+    area.style.fontSize = `${FONT[size]}px`;
+    area.style.lineHeight = LINE;
+    area.rows = 1; area.cols = 2; area.spellcheck = false;
+    const fit = () => {
+      const lines = area.value.split('\n');
+      area.rows = lines.length;
+      area.cols = Math.max(2, ...lines.map(line => line.length + 1));
+    };
+    area.addEventListener('input', fit);
+    area.addEventListener('blur', () => { if (editor === area) commitText(); });
+    document.body.appendChild(area);
+    editor = area;
+    // Focus after the pointer event settles, or the canvas takes it back.
+    setTimeout(() => area.focus(), 0);
+  }
+
+  function point(event) {
+    return { x: event.clientX, y: event.clientY };
+  }
+
+  canvas.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || isSent) return;
+    if (tool === 'text') {
+      event.preventDefault();
+      openEditor(event.clientX, event.clientY - FONT[size] * LINE / 2);
+      return;
+    }
+    commitText();
+    canvas.setPointerCapture(event.pointerId);
+    current = tool === 'eraser'
+      ? { kind: 'stroke', points: [point(event)], color: '#fff', width: ERASE[size] }
+      : { kind: 'stroke', points: [point(event)], color, width: PEN[size] };
+    draw();
+  });
+
+  canvas.addEventListener('pointermove', event => {
+    if (!current) return;
+    const events = event.getCoalescedEvents ? event.getCoalescedEvents() : [event];
+    for (const one of events.length ? events : [event]) current.points.push(point(one));
+    draw();
+  });
+
+  function endStroke() {
+    if (!current) return;
+    items.push(current);
+    current = null;
+    draw();
+  }
+  canvas.addEventListener('pointerup', endStroke);
+  canvas.addEventListener('pointercancel', endStroke);
+
+  function setTool(next) {
+    commitText();
+    tool = next;
+    document.body.classList.toggle('text', tool === 'text');
+    for (const button of document.querySelectorAll('[data-tool]')) button.classList.toggle('on', button.dataset.tool === tool);
+  }
+
+  function undo() {
+    if (editor) { closeEditor(false); return; }
+    items.pop();
+    draw();
+  }
+
+  async function send() {
+    if (isSent) return;
+    commitText();
+    const box = bounds();
+    if (!box) return toast('Nothing drawn yet');
+    const scale = Math.min(2, MAX_SIDE / Math.max(box.w, box.h));
+    const out = document.createElement('canvas');
+    out.width = Math.max(1, Math.round(box.w * scale));
+    out.height = Math.max(1, Math.round(box.h * scale));
+    const g = out.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, out.width, out.height);
+    g.setTransform(scale, 0, 0, scale, -box.x * scale, -box.y * scale);
+    paintAll(g);
+    const blob = await new Promise(resolve => out.toBlob(resolve, 'image/png'));
+    try {
+      const response = await fetch('submit', { method: 'POST', body: blob, headers: { 'Content-Type': 'image/png' } });
+      if (!response.ok) throw new Error(await response.text() || response.statusText);
+    } catch (error) {
+      return toast(`Could not send: ${error.message}`);
+    }
+    isSent = true;
+    document.getElementById('done').classList.add('show');
+    window.close();
+  }
+
+  function cancel() {
+    if (isSent) return;
+    isSent = true;
+    navigator.sendBeacon('cancel');
+    document.getElementById('done').textContent = 'Cancelled. You can close this window.';
+    document.getElementById('done').classList.add('show');
+    window.close();
+  }
+
+  document.getElementById('bar').addEventListener('pointerdown', event => {
+    // Keep the textarea's focus so a toolbar click does not look like a blur.
+    if (event.target.closest('button')) event.preventDefault();
+  });
+
+  document.getElementById('bar').addEventListener('click', event => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.dataset.tool) return setTool(button.dataset.tool);
+    if (button.dataset.color) {
+      color = button.dataset.color;
+      for (const one of document.querySelectorAll('[data-color]')) one.classList.toggle('on', one === button);
+      if (editor) editor.style.color = color;
+      if (tool === 'eraser') setTool('pen');
+      return;
+    }
+    if (button.dataset.size) {
+      size = +button.dataset.size;
+      for (const one of document.querySelectorAll('[data-size]')) one.classList.toggle('on', one === button);
+      return;
+    }
+    if (button.id === 'undo') return undo();
+    if (button.id === 'clear') { commitText(); items = []; return draw(); }
+    if (button.id === 'send') return send();
+  });
+
+  addEventListener('keydown', event => {
+    const mod = event.ctrlKey || event.metaKey;
+    if (mod && event.key === 'Enter') { event.preventDefault(); return send(); }
+    if (mod && (event.key === 'r' || event.key === 'R') || event.key === 'F5') return event.preventDefault();
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      if (editor) { closeEditor(false); return; }
+      if (items.length && Date.now() - escArmed > 2500) {
+        escArmed = Date.now();
+        return toast('Press Esc again to discard the drawing');
+      }
+      return cancel();
+    }
+    if (editor) return;  // typing: everything else is text
+    if (mod && (event.key === 'z' || event.key === 'Z')) { event.preventDefault(); return undo(); }
+    if (mod || event.altKey) return;
+    if (event.key === 'p') setTool('pen');
+    else if (event.key === 't') { event.preventDefault(); setTool('text'); }
+    else if (event.key === 'e') setTool('eraser');
+  });
+
+  addEventListener('resize', resize);
+  resize();
+})();
+</script>
+</body>
+</html>
